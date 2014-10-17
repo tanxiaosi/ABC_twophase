@@ -1,0 +1,20 @@
+function kappa= copy_sb10(Mesh)
+
+load Udata.mat
+K0=1e14*KU(:,:,:,85);
+
+% Initialize constants
+
+nElements = size(Mesh.Elements,1);     % Number of elements
+
+% Generate the value of permeability at each vertex nu
+
+kappa = zeros(nElements,1);
+
+for i =1:nElements
+    vertices = sum(Mesh.Coordinates(Mesh.Elements(i,:),:))/4;
+    x = ceil(vertices(1)*60);
+    x = x == 0
+    y = ceil(vertices(2)*220);
+    kappa(i) = K0(1,x,y);
+end

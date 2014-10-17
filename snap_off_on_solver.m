@@ -1,0 +1,137 @@
+% Run script for multiscale biconstant finite element solver.
+
+% Chak Shing Lee, October 2013
+% Department of Mathematics
+% Texas A&M University
+
+QuadRule_1D = gauleg(0,1,3);
+QuadRule_2D = TProd(gauleg(0,1,6));
+O_Handle = @(x,varargin)0*ones(size(x,1),1);
+l_Handle = @(x,varargin)ones(size(x,1),1);
+
+clear Mesh
+
+% Initialize function handles for source/sink and boundary data
+
+G = @(x,varargin)ones(size(x,1),1).*(x(:,2)>(1-2*h)).*(x(:,1)<2*h)-ones(size(x,1),1).*(x(:,2)<2*h).*(x(:,1)>(1-2*h));
+UD1 = O_Handle;
+UD2 = O_Handle;
+Pressure = O_Handle;
+
+% Initialize mesh
+
+Mesh = TProd_Mesh(0:h:1);
+
+Mesh = add_Edges(Mesh);
+Loc = get_BdEdges(Mesh);
+Mesh = add_Edge2Elem(Mesh);
+Mesh.BdFlags = zeros(size(Mesh.Edges,1),1);
+Mesh.BdFlags(Loc) = -1;
+Mesh.ElemFlag = zeros(size(Mesh.Elements,1),1);
+gp=Glo2Loc(N,N);
+Mesh = add_DDMData(Mesh,1,1,N,N,gp);
+coef1 = perm_k(perm1,Mesh);
+coef2 = perm_k(perm2,Mesh);
+% [coef,coef2] = copy_sb10(Mesh,N);
+
+% Assembling fine scale matrices and load vector
+
+[B,mark] = assemMat_Inn2(Mesh,h);
+Dofs = Edge2Dof(Mesh,mark);
+
+g = assemLoad_bnd2(Mesh,h,UD1,UD2);
+L = assemLoad_Vol_scalar(Mesh,h,QuadRule_2D,G);
+M_u1 = assemMat_Vol(Mesh,h,mark,coef1,S2,mu_w,mu_o);
+M_u2 = assemMat_Vol(Mesh,h,mark,coef2,S2,mu_w,mu_o);
+
+% Compute basis for the snapshot space
+
+R_snap_u_i = cell(4,1);
+for i = 1:4
+    M_u = mu(i)*M_u1+(1-mu(i))*M_u2;
+    [R_snap_u_i{i},R_snap_p] = snapshot_basis(Mesh,M_u,B,h,Dofs,N,gp);
+end
+
+R_snap_u = [R_snap_u_i{1};R_snap_u_i{2};R_snap_u_i{3};R_snap_u_i{4}];
+
+
+% POD and Offline space
+
+coef = sum(mu)/4*coef1+(1-sum(mu)/4)*coef2; 
+M_u = sum(mu)/4*M_u1+(1-sum(mu)/4)*M_u2;
+
+%========================================
+% temp=[];
+% for ii = 1:4
+%     for jj = 1:4
+%         temp(:,:,ii,jj) = R_snap_u_i{ii}*M_u*R_snap_u_i{jj}';
+%     end
+% end
+% for ii = 1:4
+%     for jj = 1:4
+%         newtemp(:,:,ii,jj) = (temp(:,:,ii,jj) + temp(:,:,jj,ii)')/2;
+%     end
+% end
+%=========================================
+
+M0 = R_snap_u*M_u*R_snap_u';
+M0 = (M0+M0')/2;
+perm_harm_aver = coef_aver(Mesh,N,h,coef,S2,mu_w,mu_o);
+R_off_u = POD_offline(M0,h,N,add_off,perm_harm_aver);
+R_off_u1 =  POD_offline_dis(newtemp,h,N,add_off,perm_harm_aver);
+
+
+% aver = zeros(1,size(A0,1));
+% aver(size(R_off_u,1)+1:end) = 1;
+% U0 = [A0;aver]\[L0;0];
+
+
+% POD and Online space
+
+
+coef = mu_real*coef1+(1-mu_real)*coef2; 
+M_u = mu_real*M_u1+(1-mu_real)*M_u2;
+M0 = R_off_u*R_snap_u*M_u*R_snap_u'*R_off_u';
+M0 = (M0+M0')/2;
+perm_harm_aver = coef_aver(Mesh,N,h,coef,S2,mu_w,mu_o);
+R_on_u = POD_online(M0,h,N,add_on,add_off,perm_harm_aver,R_off_u);
+
+B0 = R_snap_p*B*R_snap_u'*R_off_u'*R_on_u';
+A0 = [R_on_u*M0*R_on_u' -B0'; -B0 zeros(size(R_snap_p,1))];
+L0 = [zeros(size(R_on_u,1),1);R_snap_p*(g-L)];
+aver = zeros(1,size(A0,1));
+aver(size(R_on_u,1)+1:end) = 1;
+U0 = [A0;aver]\[L0;0];
+
+U_aux = R_snap_u'*R_off_u'*R_on_u'*U0(1:size(R_on_u,1));
+p_aux = R_snap_p'*U0(size(R_on_u,1)+1:end);
+
+U_aux = postprocess(Mesh,M_u,B,Dofs,N,gp,U_aux,g-L);
+
+% Project the solution from the staggered DG space back to usual FEM space
+
+% U_on = nodal_value(Mesh,U_aux,mark,h,UD1,UD2);
+% p_on = nodal_value_scalar(Mesh,p_aux,h);
+
+% Compute errors
+
+% err1 = L2Err_DGBFE_K(Mesh,U_snap(1:2:end),QuadRule_2D,UD1,coef);
+% err2 = L2Err_DGBFE_K(Mesh,U_snap(2:2:end),QuadRule_2D,UD2,coef);
+% erru = sqrt(err1^2+err2^2);
+% err1 = L2Err_DGBFE_K(Mesh,U_off(1:2:end)-U_snap(1:2:end),QuadRule_2D,UD1,coef);
+% err2 = L2Err_DGBFE_K(Mesh,U_off(2:2:end)-U_snap(2:2:end),QuadRule_2D,UD2,coef);
+% erru = sqrt(err1^2+err2^2)/erru;
+% errp = L2Err_DGBFE(Mesh,p_snap,QuadRule_2D,Pressure);
+% errp = L2Err_DGBFE(Mesh,p_off-p_snap,QuadRule_2D,Pressure)/errp;
+% disp(['Relative L2 error for velocity (compare with snapshot solution) is ',num2str(erru)])
+% disp(['Relative L2 error for pressure (compare with snapshot solution) is ',num2str(errp)])
+
+% Plot out solution
+
+% plot_BFE(p,Mesh);
+% colorbar;
+% plot_BFE(U(1:2:end),Mesh);
+% colorbar;
+% plot_BFE(U(2:2:end),Mesh);
+% colorbar;
+
